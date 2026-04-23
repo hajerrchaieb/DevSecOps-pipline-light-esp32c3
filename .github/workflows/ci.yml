@@ -1132,18 +1132,8 @@ jobs:
               if [ -f \"\$TEST_CPP\" ]; then
                 mkdir -p \"\$ESP_TEST/main\"
                 cp \"\$TEST_CPP\" \"\$ESP_TEST/main/test_light_app_esp32c3.cpp\"
-                cat > \"\$ESP_TEST/CMakeLists.txt\" << 'CMEOF'
-              cmake_minimum_required(VERSION 3.16)
-              include(\$ENV{IDF_PATH}/tools/cmake/project.cmake)
-              project(light_test)
-              CMEOF
-                cat > \"\$ESP_TEST/main/CMakeLists.txt\" << 'CMEOF'
-              idf_component_register(
-                  SRCS \"test_light_app_esp32c3.cpp\"
-                  INCLUDE_DIRS \".\"
-                  REQUIRES unity esp_system
-              )
-              CMEOF
+                printf 'cmake_minimum_required(VERSION 3.16)\\ninclude(\$ENV{IDF_PATH}/tools/cmake/project.cmake)\\nproject(light_test)\\n' > \"\$ESP_TEST/CMakeLists.txt\"
+                printf 'idf_component_register(\\n    SRCS \"test_light_app_esp32c3.cpp\"\\n    INCLUDE_DIRS \".\"\\n    REQUIRES unity esp_system\\n)\\n' > \"\$ESP_TEST/main/CMakeLists.txt\"
                 echo 'Test file deployed'
               fi
 
@@ -1868,3 +1858,10 @@ jobs:
           [ "$OVERALL" = "failure" ] && \
             echo "::error::One or more critical stages failed" && exit 1
           echo "Full DevSecOps loop with AI agents + QEMU + AutoFix completed"
+
+
+
+
+
+
+
