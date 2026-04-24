@@ -947,7 +947,7 @@ jobs:
       - name: Run AI Agents Orchestrator (Agents 1-8 + AutoFix)
         id: run_agents
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY1 }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           TARGET_CHIP: esp32c3
           EXAMPLE_PATH: ${{ env.EXAMPLE_PATH }}
         run: |
@@ -1287,6 +1287,111 @@ jobs:
           retention-days: 30
 
 # ════════════════════════════════════════════════════════════════════
+# STAGE SYNC — Copy ESP-Matter source into repo (run once manually)
+# Triggered by: workflow_dispatch with reason="sync-esp-matter-source"
+# After this job, esp-matter/examples/light/main/ exists in the repo
+# and Stage 4c can apply patches directly without Docker.
+# ════════════════════════════════════════════════════════════════════
+  sync-esp-matter-source:
+    name: Sync — Copy ESP-Matter source into repo
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.reason == 'sync-esp-matter-source'
+
+    steps:
+      - name: Checkout avec PAT_TOKEN (pour pouvoir commiter)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Copy ESP-Matter light source from Docker
+        run: |
+          echo "=== Pulling Docker image ==="
+          docker pull ${{ env.DOCKER_IMAGE }}
+
+          echo "=== Creating directory structure ==="
+          mkdir -p esp-matter/examples/light/main
+          mkdir -p esp-matter/examples/light/test
+
+          echo "=== Copying source files ==="
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            ${{ env.DOCKER_IMAGE }} \
+            /bin/bash -c "
+              SRC='/opt/espressif/esp-matter/examples/light/main'
+              DEST='/workspace/esp-matter/examples/light/main'
+              echo 'Files in container:'
+              ls \"\\$SRC\"
+              cp -r \"\\$SRC\"/* \"\\$DEST\"/
+              cp /opt/espressif/esp-matter/examples/light/CMakeLists.txt \
+                 /workspace/esp-matter/examples/light/ 2>/dev/null || true
+              echo 'Done. Files copied:'
+              ls \"\\$DEST\"
+            "
+
+          echo "=== Files copied ==="
+          ls -la esp-matter/examples/light/main/
+          echo "Total: $(ls esp-matter/examples/light/main/ | wc -l) files"
+
+      - name: Create .gitignore and README
+        run: |
+          cat > esp-matter/.gitignore << 'GITEOF'
+          build/
+          sdkconfig
+          sdkconfig.old
+          *.o
+          *.a
+          *.elf
+          *.bin
+          *.map
+          *.d
+          GITEOF
+
+          cat > esp-matter/README.md << 'READEOF'
+          # ESP-Matter Light Source
+
+          Source files from `hajerrchaieb/matter-light:v1` Docker image.
+          Used by AutoFix Agent (Agent 8) to generate and apply patches.
+
+          ## Files
+          - `examples/light/main/app_main.cpp`  — Main application
+          - `examples/light/main/app_driver.cpp` — LED/PWM driver
+          - `examples/light/main/app_priv.h`    — Private headers
+
+          ## DO NOT EDIT MANUALLY
+          These files are managed by the DevSecOps pipeline AutoFix Agent.
+          READEOF
+
+      - name: Commit and push ESP-Matter source
+        run: |
+          git config user.name  "DevSecOps Bot"
+          git config user.email "devsecops@github-actions.local"
+
+          git add esp-matter/
+          NFILES=$(git diff --cached --name-only | wc -l)
+          echo "Files staged: $NFILES"
+
+          if [ "$NFILES" -eq "0" ]; then
+            echo "Nothing to commit — source already in repo"
+            exit 0
+          fi
+
+          git commit -m "feat: add ESP-Matter light source for AutoFix patches
+
+          Source copied from: ${{ env.DOCKER_IMAGE }}
+          Files: esp-matter/examples/light/main/
+          Purpose: allows Stage 4c to apply autofix patches directly
+          in the repo without requiring Docker at patch-apply time.
+
+          Run: workflow_dispatch reason=sync-esp-matter-source"
+
+          git push origin ${{ github.ref_name }}
+          echo "Source committed and pushed to ${{ github.ref_name }}"
+          echo "Stage 4c will now work on next pipeline run."
+
+# ════════════════════════════════════════════════════════════════════
 # STAGE 4c — OPTION C : FULL SECOND RUN (push branche autofix)
 # Déclenche un pipeline CI COMPLET avec agents AI sur le code patché
 # Nécessite le secret PAT_TOKEN (repo + workflow permissions)
@@ -1323,74 +1428,63 @@ jobs:
           git config user.email "autofix@github-actions.local"
 
           PATCH_DIR="${{ env.REPORTS_DIR }}/patches"
-          WORKSPACE="${{ github.workspace }}"
 
-          # Step A: Copy ESP-Matter source into the repo (from Docker)
-          # Patches target main/app_main.cpp etc. which only exist in Docker.
-          # We copy the source into the runner's workspace so git can apply.
-          echo "=== Step A: Copy ESP-Matter source from Docker ==="
-          mkdir -p esp-matter/examples/light/main
-          docker pull ${{ env.DOCKER_IMAGE }} 2>/dev/null || true
-          docker run --rm             -v "$WORKSPACE:/workspace"             ${{ env.DOCKER_IMAGE }}             /bin/bash -c "
-              cp -r /opt/espressif/esp-matter/examples/light/main/*                 /workspace/esp-matter/examples/light/main/ 2>/dev/null || true
-            "
+          # Verifier que le source ESP-Matter est dans le repo
+          # (execute setup_esp_matter_source.sh une fois avant de pusher)
           SOURCE_FILES=$(ls esp-matter/examples/light/main/ 2>/dev/null | wc -l)
-          echo "Source files copied: $SOURCE_FILES"
+          echo "Source files in repo: $SOURCE_FILES"
 
           if [ "$SOURCE_FILES" -eq "0" ]; then
-            echo "::warning::No source files copied — patches cannot be applied"
+            echo "::error::esp-matter/examples/light/main/ is empty or missing"
+            echo "::error::Run: ./setup_esp_matter_source.sh then git commit+push"
             echo "applied=0" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # Step B: Add source to git so patches can be tracked
-          git add esp-matter/ 2>/dev/null || true
-
-          # Step C: Apply each patch
-          # Use `patch` command (not git apply) because source files were just
-          # copied from Docker and may not be in git index yet.
-          # Patch format: --- a/main/app_main.cpp → strip=2 (a/ + main/)
-          # with -d esp-matter/examples/light → resolves to main/app_main.cpp
+          echo "=== Applying patches ==="
           APPLIED=0; SKIPPED=0
+          TESTS_ADDED=false
+
+          # Apply AutoFix patches (target esp-matter/examples/light/main/*.cpp)
           if [ -d "$PATCH_DIR" ] && ls "$PATCH_DIR"/*.patch 2>/dev/null; then
-            echo "=== Step C: Applying patches ==="
             for PATCH in "$PATCH_DIR"/*.patch; do
               NAME=$(basename "$PATCH")
               echo "→ $NAME"
-              # Show patch header for debug
-              head -5 "$PATCH" || true
+              head -4 "$PATCH" || true
 
-              # Method 1: patch -p1 -d esp-matter/examples/light
-              # a/main/app_main.cpp → strip a/ → main/app_main.cpp → in light/ = main/app_main.cpp
-              if patch --dry-run -p1 -d esp-matter/examples/light < "$PATCH" 2>/dev/null; then
+              # Patch format: --- a/main/app_main.cpp
+              # -p1 strips "a/" → "main/app_main.cpp"
+              # -d esp-matter/examples/light → full path correct
+              if patch --dry-run -p1                    -d esp-matter/examples/light                    < "$PATCH" 2>/dev/null; then
                 patch -p1 -d esp-matter/examples/light < "$PATCH"
-                echo "  OK (patch -p1 -d esp-matter/examples/light)"
+                echo "  OK"
                 APPLIED=$((APPLIED+1))
-              # Method 2: git apply -p1 --directory (fallback)
-              elif git apply --check -p1 \
-                     --directory=esp-matter/examples/light \
-                     "$PATCH" 2>/dev/null; then
-                git apply -p1 \
-                  --directory=esp-matter/examples/light "$PATCH"
-                echo "  OK (git apply -p1 --directory)"
-                APPLIED=$((APPLIED+1))
-              # Method 3: direct git apply
-              elif git apply --check "$PATCH" 2>/dev/null; then
-                git apply "$PATCH"
-                echo "  OK (git apply direct)"
+              elif git apply --check -p1                      --directory=esp-matter/examples/light                      "$PATCH" 2>/dev/null; then
+                git apply -p1                   --directory=esp-matter/examples/light "$PATCH"
+                echo "  OK (git apply)"
                 APPLIED=$((APPLIED+1))
               else
-                echo "  Skip — showing error:"
-                patch --dry-run -p1 -d esp-matter/examples/light < "$PATCH" 2>&1 | head -5 || true
+                echo "  Skip"
+                patch --dry-run -p1                   -d esp-matter/examples/light                   < "$PATCH" 2>&1 | head -3 || true
                 SKIPPED=$((SKIPPED+1))
               fi
             done
           else
-            echo "No patches found in $PATCH_DIR"
+            echo "No patches in $PATCH_DIR"
           fi
 
-          echo "Result: applied=$APPLIED skipped=$SKIPPED"
-          echo "applied=$APPLIED" >> $GITHUB_OUTPUT
+          # Deploy generated test file into esp-matter test dir
+          TEST_CPP="${{ env.REPORTS_DIR }}/generated_tests_esp32c3.cpp"
+          if [ -f "$TEST_CPP" ]; then
+            mkdir -p esp-matter/examples/light/test
+            cp "$TEST_CPP"                esp-matter/examples/light/test/test_light_app_esp32c3.cpp
+            echo "Test file added to esp-matter/examples/light/test/"
+            TESTS_ADDED=true
+          fi
+
+          echo "Result: applied=$APPLIED skipped=$SKIPPED tests=$TESTS_ADDED"
+          echo "applied=$APPLIED"      >> $GITHUB_OUTPUT
+          echo "tests_added=$TESTS_ADDED" >> $GITHUB_OUTPUT
 
       - name: Créer branche autofix et pusher
         id: push_branch
@@ -1998,3 +2092,4 @@ jobs:
           [ "$OVERALL" = "failure" ] && \
             echo "::error::One or more critical stages failed" && exit 1
           echo "Full DevSecOps loop with AI agents + QEMU + AutoFix completed"
+
