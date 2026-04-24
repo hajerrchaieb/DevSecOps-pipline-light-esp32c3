@@ -947,7 +947,7 @@ jobs:
       - name: Run AI Agents Orchestrator (Agents 1-8 + AutoFix)
         id: run_agents
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY1 }}
           TARGET_CHIP: esp32c3
           EXAMPLE_PATH: ${{ env.EXAMPLE_PATH }}
         run: |
