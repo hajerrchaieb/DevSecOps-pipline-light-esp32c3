@@ -1,0 +1,42 @@
+{
+  "target": "esp32c3",
+  "security_score": 7,
+  "score_justification": "The security score is 7 due to the presence of a secret found in the codebase, a mutable tag in the container image, and the lack of CVEs found. However, the presence of a secret and a mutable tag are significant risks that need to be addressed.",
+  "critical_cves": [],
+  "secrets_found": [
+    {
+      "type": "API key",
+      "file": "tools/qemu_fault_runner.py",
+      "risk": "high",
+      "action": "Remove or rotate the API key immediately to prevent unauthorized access"
+    }
+  ],
+  "container_security": {
+    "image": "hajerrchaieb/matter-light:v1",
+    "digest_pinned": false,
+    "mutable_tag_risk": true,
+    "recommendation": "Pin the container image to a specific digest to prevent supply chain attacks"
+  },
+  "slsa_provenance": {
+    "hashes_available": true,
+    "binary_count": 4,
+    "integrity_status": "verified",
+    "recommendation": "Continue to maintain SLSA provenance hashes for all binaries to ensure the integrity of the firmware"
+  },
+  "supply_chain_risks": [
+    {
+      "component": "hajerrchaieb/matter-light:v1",
+      "risk": "The use of a mutable tag in the container image poses a significant supply chain risk",
+      "mitigation": "Pin the container image to a specific digest to prevent supply chain attacks"
+    }
+  ],
+  "dependency_risks": [],
+  "prioritised_actions": [
+    "Remove or rotate the API key found in tools/qemu_fault_runner.py",
+    "Pin the container image to a specific digest to prevent supply chain attacks",
+    "Continue to maintain SLSA provenance hashes for all binaries to ensure the integrity of the firmware",
+    "Regularly review and update dependencies to prevent known vulnerabilities"
+  ],
+  "compliance_notes": "The SBOM report shows a total of 13 packages with 25 relationships, which is a relatively small and manageable number. However, the presence of a secret and a mutable tag in the container image pose significant risks that need to be addressed.",
+  "summary": "The security posture of the esp32c3 target is moderate, with significant risks posed by the presence of a secret and a mutable tag in the container image. However, the lack of CVEs found and the presence of SLSA provenance hashes are positive indicators. Immediate action is required to address the secret and mutable tag risks."
+}

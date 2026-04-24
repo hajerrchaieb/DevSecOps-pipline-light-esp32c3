@@ -1,0 +1,16 @@
+{
+  "target": "esp32c3",
+  "boot_success": false,
+  "app_started": false,
+  "matter_started": false,
+  "panics": [],
+  "heap_errors": [],
+  "watchdog_triggers": [],
+  "stack_overflows": [],
+  "reboots": 0,
+  "warnings": [],
+  "log_lines": 5,
+  "critical_count": 0,
+  "status": "no_boot",
+  "summary": "Boot: FAILED | Panics: 0 | Status: NO_BOOT"
+}
