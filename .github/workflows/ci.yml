@@ -1550,44 +1550,44 @@ jobs:
           git config user.email "autofix@github-actions.local"
 
           PATCH_DIR="${{ env.REPORTS_DIR }}/patches"
-
-          # Verifier que le source ESP-Matter est dans le repo
-          # (execute setup_esp_matter_source.sh une fois avant de pusher)
           SOURCE_FILES=$(ls esp-matter/examples/light/main/ 2>/dev/null | wc -l)
-          echo "Source files in repo: $SOURCE_FILES"
-
-          if [ "$SOURCE_FILES" -eq "0" ]; then
-            echo "::error::esp-matter/examples/light/main/ is empty or missing"
-            echo "::error::Run: ./setup_esp_matter_source.sh then git commit+push"
-            echo "applied=0" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          echo "ESP-Matter source files in repo: $SOURCE_FILES"
 
           echo "=== Applying patches ==="
           APPLIED=0; SKIPPED=0
           TESTS_ADDED=false
 
-          # Apply AutoFix patches (target esp-matter/examples/light/main/*.cpp)
           if [ -d "$PATCH_DIR" ] && ls "$PATCH_DIR"/*.patch 2>/dev/null; then
             for PATCH in "$PATCH_DIR"/*.patch; do
               NAME=$(basename "$PATCH")
               echo "→ $NAME"
               head -4 "$PATCH" || true
 
-              # Patch format: --- a/main/app_main.cpp
-              # -p1 strips "a/" → "main/app_main.cpp"
-              # -d esp-matter/examples/light → full path correct
-              if patch --dry-run -p1                    -d esp-matter/examples/light                    < "$PATCH" 2>/dev/null; then
+              # Read patch header to detect target file
+              PATCH_TARGET=$(head -2 "$PATCH" | grep "^---" | sed 's|^--- a/||')
+              echo "  Target: $PATCH_TARGET"
+
+              # Method 1: direct git apply (works for repo files like demo/*.py, agents/*.py)
+              if git apply --check "$PATCH" 2>/dev/null; then
+                git apply "$PATCH"
+                echo "  OK (direct — repo file)"
+                APPLIED=$((APPLIED+1))
+
+              # Method 2: patch -p1 with esp-matter dir (for C++ sources)
+              elif [ "$SOURCE_FILES" -gt "0" ] &&                    patch --dry-run -p1 -d esp-matter/examples/light < "$PATCH" 2>/dev/null; then
                 patch -p1 -d esp-matter/examples/light < "$PATCH"
-                echo "  OK"
+                echo "  OK (esp-matter source)"
                 APPLIED=$((APPLIED+1))
-              elif git apply --check -p1                      --directory=esp-matter/examples/light                      "$PATCH" 2>/dev/null; then
-                git apply -p1                   --directory=esp-matter/examples/light "$PATCH"
-                echo "  OK (git apply)"
+
+              # Method 3: git apply with directory prefix (fallback)
+              elif [ "$SOURCE_FILES" -gt "0" ] &&                    git apply --check -p1                      --directory=esp-matter/examples/light "$PATCH" 2>/dev/null; then
+                git apply -p1 --directory=esp-matter/examples/light "$PATCH"
+                echo "  OK (git apply --directory)"
                 APPLIED=$((APPLIED+1))
+
               else
-                echo "  Skip"
-                patch --dry-run -p1                   -d esp-matter/examples/light                   < "$PATCH" 2>&1 | head -3 || true
+                echo "  Skip — reason:"
+                git apply --check "$PATCH" 2>&1 | head -2 || true
                 SKIPPED=$((SKIPPED+1))
               fi
             done
@@ -2214,5 +2214,3 @@ jobs:
           [ "$OVERALL" = "failure" ] && \
             echo "::error::One or more critical stages failed" && exit 1
           echo "Full DevSecOps loop with AI agents + QEMU + AutoFix completed"
-
-          
