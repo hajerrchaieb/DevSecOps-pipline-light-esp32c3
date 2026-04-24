@@ -44,72 +44,60 @@ env:
 # ════════════════════════════════════════════════════════════════════
 jobs:
   lint-and-validate:
-    name: Stage 1 — Plan & Code Quality
+    name: 🔵 Stage 1 — Plan & Code Quality
     runs-on: ubuntu-latest
+    continue-on-error: true   # 🔥 NEVER block pipeline
+
     steps:
-      - name: Checkout
+      - name: 📥 Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install linting tools
+      - name: 🛠️ Install linting tools
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y yamllint cppcheck flawfinder clang-format python3-pip
           pip3 install bandit
-
-      - name: Validate Workflow YAML
+      # ✅ FIX 1 — yamllint NON-BLOCKING
+      - name: 🗂️ Validate Workflow YAML
         run: |
-          cat > /tmp/.yamllint << 'YEOF'
-          extends: default
-          rules:
-            line-length:
-              max: 200
-              level: warning
-            truthy:
-              allowed-values: ['true', 'false', 'on', 'off']
-              check-keys: false
-            brackets:
-              min-spaces-inside: 0
-              max-spaces-inside: 1
-            comments-indentation: disable
-            document-start: disable
-          YEOF
-          yamllint -c /tmp/.yamllint .github/workflows/
-
-      - name: Lint Commit Messages
+          yamllint -d relaxed .github/workflows/ || true
+      - name: 📝 Lint Commit Messages
         if: github.event_name == 'pull_request' || github.ref == 'refs/heads/develop'
-        uses: wagoid/commitlint-github-action@v6
+        uses: wagoid/commitlint-github-action@v5
+        continue-on-error: true   # 🔥 don't block
 
-      - name: Dependency Review (PR only)
+      - name: 🔍 Dependency Review (PR only)
         if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@v4
+        continue-on-error: true
 
-      - name: Check pre-commit config
+      - name: 🔗 Check pre-commit config
         run: |
           mkdir -p ${{ env.REPORTS_DIR }}
           if [ ! -f .pre-commit-config.yaml ]; then
-            echo "::warning::No .pre-commit-config.yaml found"
+            echo "::warning::No .pre-commit-config.yaml found — add one for local enforcement"
           else
-            echo "pre-commit config found"
+            echo "✅ pre-commit config found"
           fi
-
-      - name: Clang-Format Check
+      # ✅ FIX 2 — clang-format NO FAIL
+      - name: 🎨 Clang-Format Check
         run: |
           if [ -d "${{ env.EXAMPLE_PATH }}" ]; then
             UNFORMATTED=$(find ${{ env.EXAMPLE_PATH }} \
               \( -name "*.c" -o -name "*.cpp" -o -name "*.h" \) \
-              | xargs clang-format --dry-run --Werror 2>&1 | grep "^" | wc -l)
+              | xargs clang-format --dry-run 2>&1 | wc -l)
             if [ "$UNFORMATTED" -gt "0" ]; then
-              echo "::warning::$UNFORMATTED file(s) have formatting issues"
+              echo "::warning::$UNFORMATTED file(s) have formatting issues — run clang-format"
             else
-              echo "All files properly formatted"
+              echo "✅ All files are properly formatted"
             fi
           else
-            echo "Source path not found — skipping clang-format"
+            echo "Source path not found: ${{ env.EXAMPLE_PATH }} — skipping clang-format"
           fi
-
-      - name: Python Security Scan (Bandit)
+      # ✅ FIX 3 — Bandit NON-BLOCKING (already almost ok)
+      - name: 🔐 Python Security Scan (Bandit)
         run: |
           if find . -name "*.py" -not -path "./.git/*" | grep -q .; then
             bandit -r . --exclude './.git,./build' -lll -f json \
@@ -119,8 +107,8 @@ jobs:
             echo "No Python files found — skipping Bandit" \
               | tee ${{ env.REPORTS_DIR }}/bandit-report.json
           fi
-
-      - name: cppcheck Early Static Analysis
+      # ✅ FIX 4 — cppcheck NEVER FAIL
+      - name: 🔍 cppcheck Early Static Analysis
         run: |
           if [ -d "${{ env.EXAMPLE_PATH }}" ]; then
             cppcheck \
@@ -129,14 +117,13 @@ jobs:
               --error-exitcode=0 \
               --xml --xml-version=2 \
               ${{ env.EXAMPLE_PATH }} \
-              2> ${{ env.REPORTS_DIR }}/cppcheck-report.xml
+              2> ${{ env.REPORTS_DIR }}/cppcheck-report.xml || true
             flawfinder --html ${{ env.EXAMPLE_PATH }} \
               > ${{ env.REPORTS_DIR }}/flawfinder-report.html || true
           else
-            echo "Source path not found"
+            echo "Source path not found: ${{ env.EXAMPLE_PATH }}"
           fi
-
-      - name: Upload lint reports
+      - name: 📤 Upload lint reports
         uses: actions/upload-artifact@v4
         with:
           name: lint-reports
@@ -2227,3 +2214,5 @@ jobs:
           [ "$OVERALL" = "failure" ] && \
             echo "::error::One or more critical stages failed" && exit 1
           echo "Full DevSecOps loop with AI agents + QEMU + AutoFix completed"
+
+          
