@@ -1,0 +1,23 @@
+--- a/main/qemu_fault_runner.py
++++ b/main/qemu_fault_runner.py
+@@ -1,2 +1,18 @@
+-// qemu_fault_runner.py — source not available during patch generation
+-// Patch is a template; apply manually after obtaining source.
++python
++import os
++
++def get_api_key():
++    api_key = os.environ.get('API_KEY')
++    if api_key is None:
++        raise Exception("API key not found in environment variables")
++    return api_key
++
++def main():
++    try:
++        api_key = get_api_key()
++        # Use the API key for authentication
++    except Exception as e:
++        print(f"Error: {e}")
++
++if __name__ == "__main__":
++    main()
