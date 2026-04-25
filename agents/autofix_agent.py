@@ -188,6 +188,46 @@ def collect_issues(target: str) -> List[Dict]:
 # PATCH GENERATION  (LLM → unified diff)
 # ═══════════════════════════════════════════════════════════════
 
+
+
+def _validate_patch(patch_path: Path, filename: str, original_src: str) -> bool:
+    """
+    Test that the patch applies cleanly by running patch --dry-run.
+    Returns True if patch is valid, False if it should be discarded.
+    """
+    import tempfile
+    import subprocess
+    try:
+        # Write original source to a temp file
+        with tempfile.NamedTemporaryFile(
+            suffix=Path(filename).suffix, mode='w',
+            encoding='utf-8', delete=False
+        ) as tmp:
+            tmp.write(original_src)
+            tmp_path = tmp.name
+
+        # Try applying with patch --dry-run
+        result = subprocess.run(
+            ["patch", "--dry-run", "-p0", tmp_path, str(patch_path)],
+            capture_output=True, text=True, timeout=10
+        )
+        import os
+        os.unlink(tmp_path)
+
+        if result.returncode == 0:
+            logger.info("Patch validation OK: %s", patch_path.name)
+            return True
+        else:
+            logger.warning(
+                "Patch validation FAILED: %s\n%s",
+                patch_path.name, result.stderr[:300]
+            )
+            return False
+    except Exception as e:
+        logger.warning("Patch validation error: %s", e)
+        return True  # Don't discard on validator error
+
+
 def _generate_patch_for_file(
     filename: str,
     original_src: str,
@@ -275,7 +315,16 @@ Return the complete corrected file content only."""),
     patch_name = f"fix_{safe_name}"
     patch_path = PATCHES / f"{patch_name}.patch"
     patch_path.write_text(patch_content, encoding="utf-8")
-    logger.info("Patch saved: %s (%d lines)", patch_path.name, len(diff_lines))
+
+    # VALIDATE: Test that the patch actually applies cleanly
+    # If not → discard (broken patch is worse than no patch)
+    patch_valid = _validate_patch(patch_path, filename, original_src)
+    if not patch_valid:
+        logger.warning("Patch DISCARDED — does not apply cleanly: %s", patch_path.name)
+        patch_path.unlink(missing_ok=True)
+        return None
+
+    logger.info("Patch saved + validated: %s (%d lines)", patch_path.name, len(diff_lines))
 
     return {
         "filename":      filename,
