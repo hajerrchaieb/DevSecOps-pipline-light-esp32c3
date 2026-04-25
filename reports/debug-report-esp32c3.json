@@ -1,0 +1,39 @@
+{
+  "target": "esp32c3",
+  "build_status": "success",
+  "compilation_errors": [],
+  "warnings": [
+    {
+      "type": "Kconfig warning",
+      "description": "default on the choice symbol SEC_CERT_DAC_PROVIDER will have no effect",
+      "impact": "low"
+    },
+    {
+      "type": "Kconfig warning",
+      "description": "the choice symbol SEC_CERT_DAC_PROVIDER is defined with a prompt outside the choice",
+      "impact": "low"
+    },
+    {
+      "type": "Kconfig warning",
+      "description": "Symbol SEC_CERT_DAC_PROVIDER defined in multiple locations",
+      "impact": "medium"
+    }
+  ],
+  "unit_test_status": "not_implemented",
+  "unit_test_findings": [
+    {
+      "test": "unit tests",
+      "result": "missing",
+      "note": "add tests via workflow_dispatch reason=sync-esp-matter-source"
+    }
+  ],
+  "quality_gate_errors": 1,
+  "quality_gate_status": "fail",
+  "prioritised_actions": [
+    "Implement unit tests to ensure code coverage and reliability",
+    "Address the unreadVariable error in app_main.cpp by using the assigned value or removing the assignment",
+    "Review Kconfig warnings to ensure correct configuration"
+  ],
+  "overall_health": "degraded",
+  "summary": "The build was successful, but there are Kconfig warnings and a quality gate error due to an unused variable. Unit tests are not implemented, which is a significant concern. Prioritised actions should be taken to address these issues and improve the overall health of the project."
+}
