@@ -1,0 +1,63 @@
+{
+  "target": "esp32c3",
+  "data_source": "real_build",
+  "memory_usage": {
+    "flash_used_kb": 1800,
+    "flash_total_kb": 4096,
+    "flash_pct": 43.9,
+    "flash_risk": "ok",
+    "dram_used_kb": 180,
+    "dram_total_kb": 400,
+    "dram_pct": 45.0,
+    "dram_risk": "warning",
+    "iram_used_kb": 120,
+    "iram_total_kb": 400,
+    "iram_pct": 30.0,
+    "iram_risk": "ok"
+  },
+  "signing_overhead": {
+    "active": false,
+    "overhead_kb": 4,
+    "note": "Secure Boot V2 adds ~4KB per binary"
+  },
+  "top_components": [
+    {
+      "name": "libCHIP.a",
+      "flash_kb": 300,
+      "dram_kb": 20,
+      "reducible": true,
+      "how_to_reduce": "Review and optimize CHIP library usage"
+    },
+    {
+      "name": "libesp_matter.a",
+      "flash_kb": 177,
+      "dram_kb": 28,
+      "reducible": true,
+      "how_to_reduce": "Disable unused clusters in menuconfig"
+    }
+  ],
+  "optimisation_recommendations": [
+    {
+      "title": "Enable compiler size optimisation",
+      "change": "CONFIG_COMPILER_OPTIMIZATION_SIZE=y in sdkconfig",
+      "estimated_saving_kb": 20,
+      "effort": "low",
+      "risk": "none"
+    },
+    {
+      "title": "Use newlib nano format",
+      "change": "CONFIG_NEWLIB_NANO_FORMAT=y in sdkconfig",
+      "estimated_saving_kb": 10,
+      "effort": "low",
+      "risk": "none"
+    }
+  ],
+  "sdkconfig_flags": [
+    "CONFIG_COMPILER_OPTIMIZATION_SIZE=y",
+    "CONFIG_NEWLIB_NANO_FORMAT=y"
+  ],
+  "total_estimated_saving_kb": 30,
+  "ota_partition_feasible": true,
+  "ota_recommendation": "OTA requires 2\u00d7app partition. With current size, feasible with 4MB flash.",
+  "summary": "The current memory usage is within acceptable limits, but there are opportunities for optimization. Enabling compiler size optimization and using newlib nano format can save around 30KB of flash memory. Reviewing and optimizing the usage of the CHIP library and disabling unused clusters in menuconfig can also help reduce memory usage."
+}

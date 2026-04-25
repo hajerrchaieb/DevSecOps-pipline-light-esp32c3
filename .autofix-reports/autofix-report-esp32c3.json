@@ -1,0 +1,48 @@
+{
+  "agent": "autofix_agent",
+  "target": "esp32c3",
+  "timestamp": "2026-04-25T10:32:26.271915",
+  "issues_analyzed": 2,
+  "files_patched": 2,
+  "patches_generated": 2,
+  "patch_files": [
+    "reports/patches/fix_tools_qemu_fault_runner.py.patch",
+    "reports/patches/fix_app_main.cpp.patch"
+  ],
+  "apply_script": "reports/patches/APPLY_ALL.sh",
+  "patches_detail": [
+    {
+      "filename": "tools/qemu_fault_runner.py",
+      "patch_file": "reports/patches/fix_tools_qemu_fault_runner.py.patch",
+      "diff_lines": 338,
+      "issues_fixed": [
+        "Hardcoded API key detected"
+      ],
+      "cwe_list": [
+        "CWE-798"
+      ],
+      "severity": "critical"
+    },
+    {
+      "filename": "app_main.cpp",
+      "patch_file": "reports/patches/fix_app_main.cpp.patch",
+      "diff_lines": 222,
+      "issues_fixed": [
+        "pointer not checked for NULL after allocation"
+      ],
+      "cwe_list": [
+        "CWE-476"
+      ],
+      "severity": "high"
+    }
+  ],
+  "apply_results": [],
+  "test_integration": {
+    "status": "deployed",
+    "source": "reports/generated_tests_esp32c3.cpp",
+    "dest": "/home/runner/work/DevSecOps-pipline-light-esp32c3/DevSecOps-pipline-light-esp32c3/esp-matter/examples/light/test/test_light_app_esp32c3.cpp",
+    "size_chars": 223
+  },
+  "status": "patches_generated",
+  "summary": "2 patch(es) generated for 2 file(s), addressing 2 issue(s). Test integration: deployed. Apply with: bash reports/patches/APPLY_ALL.sh"
+}
