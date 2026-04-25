@@ -78,21 +78,27 @@ def _find_source_dir() -> Path | None:
     return None
 
 
-def _read_source(filename: str, src_dir: Path | None) -> str:
-    """Read a source file; return empty string if unavailable."""
-    if src_dir is None:
-        return ""
-    p = src_dir / filename
-    try:
-        content = p.read_text(encoding="utf-8", errors="ignore")
-        return content
-    except Exception:
-        return ""
+def _read_source(filename: str, src_dir) -> str:
+    """Read a source file — checks repo root first, then esp-matter src dir."""
+    # Try 1: repo root — works for demo/*.py, agents/*.py, any repo file
+    repo_path = Path(filename)
+    if repo_path.exists():
+        try:
+            return repo_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            pass
 
+    # Try 2: esp-matter source dir — for C++ files (app_main.cpp etc)
+    if src_dir is not None:
+        p = src_dir / Path(filename).name
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            if text:
+                return text
+        except Exception:
+            pass
 
-# ═══════════════════════════════════════════════════════════════
-# ISSUE COLLECTION  (aggregates all agent reports)
-# ═══════════════════════════════════════════════════════════════
+    return ""
 
 def _load_json(path: Path) -> dict:
     try:
@@ -252,8 +258,8 @@ Return the complete corrected file content only."""),
     diff_lines = list(difflib.unified_diff(
         original_src.splitlines(keepends=True),
         fixed.splitlines(keepends=True),
-        fromfile=f"a/main/{filename}",
-        tofile=f"b/main/{filename}",
+        fromfile=f"a/main/{filename}" if any(filename.endswith(e) for e in ('.cpp','.c','.h','.hpp')) else f"a/{filename}",
+        tofile=f"b/main/{filename}"   if any(filename.endswith(e) for e in ('.cpp','.c','.h','.hpp')) else f"b/{filename}",
         lineterm="\n",
     ))
 
@@ -453,8 +459,8 @@ def run_autofix_agent(
     issues_by_file: Dict[str, List[Dict]] = {}
     for issue in issues:
         f = issue.get("file") or "app_main.cpp"
-        # Normalise: strip path prefix, keep basename
-        f = Path(f).name if "/" in f or "\\" in f else f
+        # Keep full relative path (demo/bug.py stays demo/bug.py)
+        f = f.lstrip("/")
         issues_by_file.setdefault(f, []).append(issue)
 
     # ── 3. Load sources ───────────────────────────────────────────
