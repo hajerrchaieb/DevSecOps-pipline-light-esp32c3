@@ -358,15 +358,15 @@ def run_test_gen_agent(target: str = TARGET) -> dict:
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are an expert embedded systems test engineer for
 ESP32 / ESP-IDF / ESP-Matter firmware using the Unity framework.
-CRITICAL: In your JSON response, ALL newlines inside string values MUST be
-escaped as \\n — never use literal newlines inside JSON strings.
-Respond with a valid JSON object only — no markdown, no backticks.
-Generate tests that cover:
-  1. Normal operation (on/off, brightness, commissioning)
-  2. Robustness: NULL pointers, heap exhaustion, NVS corruption
-  3. Regression: every failed fault injection scenario
-  4. Security: input validation, boundary checks"""),
-
+CRITICAL RULES — ALL must be followed:
+1. ALL newlines inside JSON string values MUST be escaped as \\n
+2. Respond with valid JSON only — no markdown, no backticks
+3. NEVER use test_placeholder — it is a stub that tests NOTHING
+4. Generate REAL test functions with actual TEST_ASSERT_* calls
+5. test_file_content MUST implement every test in test_cases
+6. Every test function must have at least one TEST_ASSERT_EQUAL or TEST_ASSERT_NOT_NULL
+7. Use types from mock_idf.h: esp_err_t, ESP_OK, ESP_ERR_INVALID_ARG, etc.
+"""),
         ("human", """Generate unit and integration tests for ESP-Matter light.
 Target: {target}
 
@@ -387,7 +387,7 @@ Respond with exactly this JSON (escape ALL newlines in code as \\n):
   "target": "{target}",
   "test_file_name": "test_light_app_{target}.cpp",
   "existing_coverage": "none",
-  "test_file_content": "#include <unity.h>\\n#include \\"mock_idf.h\\"\\n\\nvoid setUp(void) {{}}\\nvoid tearDown(void) {{}}\\n\\nvoid test_placeholder(void) {{ TEST_PASS(); }}\\n\\nvoid app_main(void) {{\\n    UNITY_BEGIN();\\n    RUN_TEST(test_placeholder);\\n    UNITY_END();\\n}}",
+  "test_file_content": "#include <unity.h>\\n#include \\"mock_idf.h\\"\\n\\nvoid setUp(void) {{}}\\nvoid tearDown(void) {{}}\\n\\n/* Test 1: on/off cluster — normal operation */\\nvoid test_on_off_cluster_toggle(void) {{\\n    esp_matter_attr_val_t val;\\n    val.type = ESP_MATTER_VAL_TYPE_BOOLEAN;\\n    val.val.b = true;\\n    esp_err_t ret = app_driver_attribute_update(NULL, 1, 0x0006, &val);\\n    TEST_ASSERT_EQUAL(ESP_OK, ret);\\n}}\\n\\n/* Test 2: NULL endpoint — robustness */\\nvoid test_null_endpoint_handled(void) {{\\n    esp_err_t ret = app_driver_attribute_update(NULL, 0, 0x0006, NULL);\\n    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, ret);\\n}}\\n\\n/* Test 3: invalid attribute type — boundary check */\\nvoid test_invalid_attribute_type(void) {{\\n    esp_matter_attr_val_t val;\\n    val.type = ESP_MATTER_VAL_TYPE_INVALID;\\n    esp_err_t ret = app_driver_attribute_update(NULL, 1, 0x0006, &val);\\n    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, ret);\\n}}\\n\\nvoid app_main(void) {{\\n    UNITY_BEGIN();\\n    RUN_TEST(test_on_off_cluster_toggle);\\n    RUN_TEST(test_null_endpoint_handled);\\n    RUN_TEST(test_invalid_attribute_type);\\n    UNITY_END();\\n}}",
   "mock_files": [
     {{"filename": "mock_led_driver.h", "content": "/* mock content \\\\n */"}},
     {{"filename": "mock_gpio.h",       "content": "/* mock content \\\\n */"}}
@@ -463,6 +463,56 @@ Respond with exactly this JSON (escape ALL newlines in code as \\n):
         print("[Test Gen Agent] JSON parsed successfully")
 
     REPORTS.mkdir(exist_ok=True)
+
+    # ── Fallback: if LLM returned placeholder, generate real tests ──
+    cpp_check = report.get("test_file_content", "")
+    if "test_placeholder" in cpp_check and "TEST_PASS()" in cpp_check:
+        print("[Test Gen Agent] LLM returned placeholder — generating real tests locally")
+        real_cpp = (
+            '#include <unity.h>\n'
+            '#include "mock_idf.h"\n\n'
+            'void setUp(void) {}\n'
+            'void tearDown(void) {}\n\n'
+            '/* Test: on/off attribute update */\n'
+            'void test_on_off_attribute_update(void) {\n'
+            '    esp_matter_attr_val_t val;\n'
+            '    val.type = ESP_MATTER_VAL_TYPE_BOOLEAN;\n'
+            '    val.val.b = true;\n'
+            '    esp_err_t r = app_driver_attribute_update(NULL, 1, 0x0006, &val);\n'
+            '    TEST_ASSERT_EQUAL(ESP_OK, r);\n'
+            '}\n\n'
+            '/* Test: NULL val pointer rejected */\n'
+            'void test_null_val_rejected(void) {\n'
+            '    esp_err_t r = app_driver_attribute_update(NULL, 1, 0x0006, NULL);\n'
+            '    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, r);\n'
+            '}\n\n'
+            '/* Test: INVALID type rejected */\n'
+            'void test_invalid_type_rejected(void) {\n'
+            '    esp_matter_attr_val_t val;\n'
+            '    val.type = ESP_MATTER_VAL_TYPE_INVALID;\n'
+            '    esp_err_t r = app_driver_attribute_update(NULL, 1, 0x0006, &val);\n'
+            '    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, r);\n'
+            '}\n\n'
+            '/* Test: brightness range 0-254 */\n'
+            'void test_brightness_boundary(void) {\n'
+            '    esp_matter_attr_val_t val;\n'
+            '    val.type = ESP_MATTER_VAL_TYPE_INTEGER;\n'
+            '    val.val.i = 254;\n'
+            '    esp_err_t r = app_driver_attribute_update(NULL, 1, 0x0008, &val);\n'
+            '    TEST_ASSERT_EQUAL(ESP_OK, r);\n'
+            '}\n\n'
+            'void app_main(void) {\n'
+            '    UNITY_BEGIN();\n'
+            '    RUN_TEST(test_on_off_attribute_update);\n'
+            '    RUN_TEST(test_null_val_rejected);\n'
+            '    RUN_TEST(test_invalid_type_rejected);\n'
+            '    RUN_TEST(test_brightness_boundary);\n'
+            '    UNITY_END();\n'
+            '}\n'
+        )
+        report["test_file_content"] = real_cpp
+        report["fallback_used"] = True
+        print(f"[Test Gen Agent] Real tests generated locally ({len(real_cpp)} chars)")
 
     # ── Save JSON report ──────────────────────────────────────────
     out_json = REPORTS / f"testgen-report-{target}.json"
