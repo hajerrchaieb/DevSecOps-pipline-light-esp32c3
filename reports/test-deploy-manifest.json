@@ -1,0 +1,13 @@
+{
+  "status": "deployed",
+  "test_dir": "/home/runner/work/DevSecOps-pipline-light-esp32c3/DevSecOps-pipline-light-esp32c3/esp-matter/examples/light/test",
+  "deployed_files": [
+    "/home/runner/work/DevSecOps-pipline-light-esp32c3/DevSecOps-pipline-light-esp32c3/esp-matter/examples/light/test/test_light_app_esp32c3.cpp",
+    "/home/runner/work/DevSecOps-pipline-light-esp32c3/DevSecOps-pipline-light-esp32c3/esp-matter/examples/light/test/CMakeLists.txt",
+    "/home/runner/work/DevSecOps-pipline-light-esp32c3/DevSecOps-pipline-light-esp32c3/esp-matter/examples/light/test/main/CMakeLists.txt",
+    "/home/runner/work/DevSecOps-pipline-light-esp32c3/DevSecOps-pipline-light-esp32c3/esp-matter/examples/light/test/mock_led_driver.h",
+    "/home/runner/work/DevSecOps-pipline-light-esp32c3/DevSecOps-pipline-light-esp32c3/esp-matter/examples/light/test/mock_gpio.h"
+  ],
+  "errors": [],
+  "timestamp": "2026-04-25T10:31:28.291787"
+}

@@ -1,0 +1,42 @@
+{
+  "target": "esp32c3",
+  "security_score": 7,
+  "score_justification": "The security score of 7 is justified due to the presence of a secret found in the codebase, a mutable tag in the container image, and the lack of CVEs found. However, the presence of a secret and a mutable tag are significant risks that need to be addressed. The score is not lower due to the absence of critical CVEs and the availability of SLSA hashes for firmware binaries.",
+  "critical_cves": [],
+  "secrets_found": [
+    {
+      "type": "API key",
+      "file": "tools/qemu_fault_runner.py",
+      "risk": "high",
+      "action": "Remove or rotate the API key immediately to prevent unauthorized access"
+    }
+  ],
+  "container_security": {
+    "image": "hajerrchaieb/matter-light:v1",
+    "digest_pinned": false,
+    "mutable_tag_risk": true,
+    "recommendation": "Pin the container image to a specific digest to prevent supply chain attacks"
+  },
+  "slsa_provenance": {
+    "hashes_available": true,
+    "binary_count": 4,
+    "integrity_status": "verified",
+    "recommendation": "Continue to maintain SLSA provenance for all firmware binaries to ensure their integrity and authenticity"
+  },
+  "supply_chain_risks": [
+    {
+      "component": "hajerrchaieb/matter-light:v1",
+      "risk": "Mutable tag in the container image poses a significant supply chain risk",
+      "mitigation": "Pin the container image to a specific digest to prevent supply chain attacks"
+    }
+  ],
+  "dependency_risks": [],
+  "prioritised_actions": [
+    "Remove or rotate the API key found in tools/qemu_fault_runner.py",
+    "Pin the container image to a specific digest to prevent supply chain attacks",
+    "Continue to maintain SLSA provenance for all firmware binaries",
+    "Regularly scan for secrets and CVEs to ensure the security posture of the target"
+  ],
+  "compliance_notes": "The SBOM report shows compliance with the CycloneDX format, but the presence of a secret and a mutable tag may impact compliance with certain regulatory requirements.",
+  "summary": "The security posture of the esp32c3 target is moderate, with significant risks posed by a secret found in the codebase and a mutable tag in the container image. However, the absence of critical CVEs and the availability of SLSA hashes for firmware binaries are positive indicators. Immediate action is required to address the identified risks and ensure the security of the target."
+}

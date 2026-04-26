@@ -1,0 +1,51 @@
+{
+  "target": "esp32c3",
+  "version": "v28",
+  "pipeline_passed": false,
+  "errors_found": true,
+  "second_run_ready": true,
+  "stage_results": {
+    "code_quality": {
+      "score": 4,
+      "issues": 0
+    },
+    "security": {
+      "score": 7,
+      "cves": 0,
+      "secrets": 1
+    },
+    "build": {
+      "status": "success"
+    },
+    "tests_generated": 7,
+    "tests_deployed": true,
+    "memory": {
+      "flash_pct": 43.9
+    },
+    "fault_injection": {
+      "robustness_score": 7,
+      "verdict": "NEEDS_IMPROVEMENT",
+      "critical_failures": []
+    },
+    "dynamic_score": 2,
+    "hil": {
+      "status": "not_run",
+      "boot_success": false,
+      "matter_started": false
+    },
+    "autofix": {
+      "patches_generated": 2,
+      "patch_files": [
+        "reports/patches/fix_tools_qemu_fault_runner.py.patch",
+        "reports/patches/fix_app_main.cpp.patch"
+      ],
+      "apply_script": "reports/patches/APPLY_ALL.sh",
+      "test_deploy_status": "deployed",
+      "issues_analyzed": 2
+    },
+    "release": {
+      "version": "v28",
+      "canary_deploy": "simulated"
+    }
+  }
+}
