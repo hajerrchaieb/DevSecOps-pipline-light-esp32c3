@@ -1,0 +1,11 @@
+--- a/demo/intentional_bug.py
++++ b/demo/intentional_bug.py
+@@ -7,6 +7,8 @@
+ 
+ def process_data(data):
+     result = data.get("value")
++    if result is None:
++        return ''
+     return result.strip()
+ 
+ if __name__ == "__main__":
