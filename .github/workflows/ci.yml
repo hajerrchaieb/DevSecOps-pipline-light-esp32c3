@@ -1,4 +1,4 @@
-nme: ESP32 Matter — DevSecOps Full Lifecycle
+name: ESP32 Matter — DevSecOps Full Lifecycle
 
 on:
   push:
