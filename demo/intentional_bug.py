@@ -7,6 +7,8 @@ def compute_ratio(a, b):
 
 def process_data(data):
     result = data.get("value")
+    if result is None:
+        return ''
     return result.strip()
 
 if __name__ == "__main__":

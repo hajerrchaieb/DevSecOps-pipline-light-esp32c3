@@ -5,35 +5,52 @@
   "warnings": [
     {
       "type": "Kconfig warning",
-      "description": "default on the choice symbol SEC_CERT_DAC_PROVIDER will have no effect",
+      "description": "The choice symbol SEC_CERT_DAC_PROVIDER is defined with a prompt outside the choice and will have no effect",
       "impact": "low"
     },
     {
-      "type": "Kconfig warning",
-      "description": "the choice symbol SEC_CERT_DAC_PROVIDER is defined with a prompt outside the choice",
+      "type": "cppcheck warning",
+      "description": "Variable 'dac_provider' is assigned a value that is never used",
       "impact": "low"
     },
     {
-      "type": "Kconfig warning",
-      "description": "Symbol SEC_CERT_DAC_PROVIDER defined in multiple locations",
+      "type": "cppcheck warning",
+      "description": "Include file: 'mock_idf.h' not found",
       "impact": "medium"
+    },
+    {
+      "type": "cppcheck warning",
+      "description": "The function 'setUp' is never used",
+      "impact": "low"
+    },
+    {
+      "type": "cppcheck warning",
+      "description": "The function 'tearDown' is never used",
+      "impact": "low"
+    },
+    {
+      "type": "cppcheck warning",
+      "description": "The function 'app_main' is never used",
+      "impact": "low"
     }
   ],
-  "unit_test_status": "not_implemented",
+  "unit_test_status": "fail",
   "unit_test_findings": [
     {
-      "test": "unit tests",
-      "result": "missing",
-      "note": "add tests via workflow_dispatch reason=sync-esp-matter-source"
+      "test": "Test file has 1 test function(s)",
+      "result": "fail",
+      "note": "Build status: failed, please check the test file and rebuild"
     }
   ],
-  "quality_gate_errors": 1,
+  "quality_gate_errors": 5,
   "quality_gate_status": "fail",
   "prioritised_actions": [
-    "Implement unit tests to ensure code coverage and reliability",
-    "Address the unreadVariable error in app_main.cpp by using the assigned value or removing the assignment",
-    "Review Kconfig warnings to ensure correct configuration"
+    "Fix the Kconfig warning by checking the SEC_CERT_DAC_PROVIDER definition",
+    "Remove unused variables and functions to improve code quality",
+    "Fix the include file not found error by checking the mock_idf.h file",
+    "Rebuild and rerun the unit tests to ensure they pass",
+    "Address the quality gate errors to improve overall code quality"
   ],
   "overall_health": "degraded",
-  "summary": "The build was successful, but there are Kconfig warnings and a quality gate error due to an unused variable. Unit tests are not implemented, which is a significant concern. Prioritised actions should be taken to address these issues and improve the overall health of the project."
+  "summary": "The build was successful, but there are several warnings and quality gate errors that need to be addressed. The unit tests failed due to a build error. The code quality is degraded and needs improvement. It is recommended to fix the Kconfig warning, remove unused variables and functions, and address the quality gate errors to improve the overall health of the project."
 }
