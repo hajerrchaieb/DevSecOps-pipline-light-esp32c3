@@ -1,576 +1,409 @@
 """
-agents/autofix_agent.py  —  Agent 8 : Auto-Fix Agent
-======================================================
-ROLE:
-  Reads issues from ALL previous agent reports (debug, code-review,
-  security, fault-analysis), generates unified diff patches for each
-  affected source file, and saves them into reports/patches/.
+supervisor/orchestrator.py
+==========================
+LangGraph StateGraph Orchestrator — version finale avec Agent 8 (AutoFix).
 
-  On second CI run the patches are applied BEFORE the build step so
-  the firmware is recompiled with the fixes in place.
-
-INPUTS  (all read from reports/):
-  debug-report-{target}.json
-  code-review-{target}.json
-  security-report-{target}.json
-  fault-analysis-report-{target}.json
-
-OUTPUTS:
-  reports/autofix-report-{target}.json   ← consumed by orchestrator
-  reports/patches/fix_<name>.patch       ← unified diff, git-apply ready
-  reports/patches/APPLY_ALL.sh           ← convenience apply script
-
-INTEGRATION WITH CI (ci.yml):
-  The ci.yml workflow has two apply hooks:
-    1. "Apply AutoFix patches" step BEFORE the second build (Stage 4b)
-       runs:  bash reports/patches/APPLY_ALL.sh
-    2. Artifact upload includes reports/patches/ so patches survive
-       across workflow jobs.
-
-USAGE:
-  python3 agents/autofix_agent.py
-  python3 agents/autofix_agent.py --apply     # also git-apply patches
-  python3 agents/autofix_agent.py --target esp32c3
+Pipeline graph :
+  code_review -> security -> debug -> fault_analysis
+                                           |
+                               test_gen -> optimization -> release -> autofix -> summary -> END
 """
-
-import difflib
-import json
-import logging
-import os
-import subprocess
-from datetime import datetime
+import json, os, sys, re
 from pathlib import Path
-from typing import List, Dict
-
+from typing import TypedDict
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langgraph.graph import StateGraph, END
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from agents.debug_agent          import run_debug_agent
+from agents.security_agent       import run_security_agent
+from agents.code_review_agent    import run_code_review_agent
+from agents.test_gen_agent       import run_test_gen_agent
+from agents.optimization_agent   import run_optimization_agent
+from agents.release_agent        import run_release_agent
+from agents.fault_analysis_agent import run_fault_analysis_agent
+from agents.autofix_agent        import run_autofix_agent
 
 load_dotenv()
-
-TARGET  = os.getenv("TARGET_CHIP", "esp32c3")
-REPORTS = Path("reports")
-PATCHES = Path("reports/patches")
-
-logging.basicConfig(level=logging.INFO, format="[AutoFix] %(message)s")
-logger = logging.getLogger("autofix_agent")
+TARGET   = os.getenv("TARGET_CHIP", "esp32c3")
+REPORTS  = Path("reports")
+FIRMWARE = Path("firmware")
 
 
-# ═══════════════════════════════════════════════════════════════
-# SOURCE RESOLUTION  (same multi-path strategy as other agents)
-# ═══════════════════════════════════════════════════════════════
+class PipelineState(TypedDict):
+    target:      str
+    source_path: str
+    version:     str
+    code_review_result:    dict
+    security_result:       dict
+    debug_result:          dict
+    testgen_result:        dict
+    optimization_result:   dict
+    release_result:        dict
+    fault_analysis_result: dict
+    autofix_result:        dict
+    container_scan_result: dict
+    unit_test_result:      dict
+    slsa_hashes:           dict
+    ota_manifest:          dict
+    deploy_status:         str
+    feedback_issues:       list
+    fault_injection_result: dict
+    hil_result:             dict
+    dynamic_score:          int
+    patches_generated:  int
+    tests_deployed:     bool
+    current_stage:   str
+    errors_found:    bool
+    pipeline_passed: bool
+    summary:         str
 
-def _find_source_dir() -> Path | None:
-    """Return the first existing ESP-Matter light/main source directory."""
-    candidates = [
-        Path("esp-matter/examples/light/main"),
-        Path("../esp-matter/examples/light/main"),
-        Path("/opt/espressif/esp-matter/examples/light/main"),
-        Path.home() / "esp-matter/examples/light/main",
-    ]
-    for c in candidates:
-        r = c.resolve()
-        if r.is_dir() and (list(r.glob("*.cpp")) + list(r.glob("*.c"))):
-            logger.info("Source dir: %s", r)
-            return r
-    logger.warning("Source dir not found — patches will be template-only")
-    return None
-
-
-def _read_source(filename: str, src_dir) -> str:
-    """Read a source file — checks repo root first, then esp-matter src dir."""
-    # Try 1: repo root — works for demo/*.py, agents/*.py, any repo file
-    repo_path = Path(filename)
-    if repo_path.exists():
-        try:
-            return repo_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            pass
-
-    # Try 2: esp-matter source dir — for C++ files (app_main.cpp etc)
-    if src_dir is not None:
-        p = src_dir / Path(filename).name
-        try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
-            if text:
-                return text
-        except Exception:
-            pass
-
-    return ""
 
 def _load_json(path: Path) -> dict:
+    try:    return json.loads(path.read_text(encoding="utf-8"))
+    except: return {}
+
+def _load_slsa_hashes(target: str) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+        lines = (REPORTS / "firmware-sha256.txt").read_text().strip().splitlines()
+        return {p[1]: p[0] for p in (l.strip().split() for l in lines) if len(p) == 2}
+    except: return {}
+
+def _load_deploy_status() -> str:
+    try:    return (REPORTS / "deploy-status.txt").read_text().strip()
+    except: return "simulated"
 
 
-def collect_issues(target: str) -> List[Dict]:
-    """
-    Collect CRITICAL + HIGH issues from all previous agent reports.
-    Returns a unified list of issue dicts, each with keys:
-      file, description, severity, fix_hint, cwe, source
-    """
-    issues: List[Dict] = []
-
-    # ── Agent 1: Debug — compilation errors ──────────────────────
-    debug = _load_json(REPORTS / f"debug-report-{target}.json")
-    for err in debug.get("compilation_errors", []):
-        issues.append({
-            "source":      "debug_agent",
-            "severity":    "critical",
-            "file":        err.get("file", "app_main.cpp"),
-            "location":    str(err.get("line", "?")),
-            "description": err.get("error", err.get("root_cause", "?")),
-            "fix_hint":    err.get("fix", ""),
-            "cwe":         "",
-        })
-    # Warnings that are high-impact
-    for w in debug.get("warnings", []):
-        if w.get("impact") == "high":
-            issues.append({
-                "source":      "debug_agent",
-                "severity":    "high",
-                "file":        "app_main.cpp",
-                "location":    "see warning",
-                "description": w.get("description", ""),
-                "fix_hint":    "",
-                "cwe":         "",
-            })
-
-    # ── Agent 3: Code Review — quality issues ─────────────────────
-    review = _load_json(REPORTS / f"code-review-{target}.json")
-    for issue in review.get("issues", []):
-        if issue.get("severity", "low") in ("critical", "high"):
-            issues.append({
-                "source":      "code_review",
-                "severity":    issue.get("severity", "high"),
-                "file":        issue.get("file", "app_main.cpp"),
-                "location":    issue.get("location", "?"),
-                "description": issue.get("description", ""),
-                "fix_hint":    issue.get("good_code", issue.get("fix", "")),
-                "cwe":         issue.get("cwe", ""),
-            })
-
-    # ── Agent 2: Security — secrets + CVEs ───────────────────────
-    security = _load_json(REPORTS / f"security-report-{target}.json")
-    for secret in security.get("secrets_found", []):
-        issues.append({
-            "source":      "security_agent",
-            "severity":    "critical",
-            "file":        secret.get("file", "app_main.cpp"),
-            "location":    "hardcoded credential",
-            "description": f"Hardcoded {secret.get('type', 'secret')} detected",
-            "fix_hint":    secret.get("action", "Move to NVS or env variable"),
-            "cwe":         "CWE-798",
-        })
-
-    # ── Agent 7: Fault Analysis — robustness fixes ────────────────
-    fault = _load_json(REPORTS / f"fault-analysis-report-{target}.json")
-    for sc in fault.get("failed_scenarios_analysis", []):
-        issues.append({
-            "source":      "fault_analysis",
-            "severity":    "high",
-            "file":        sc.get("affected_file", "app_main.cpp"),
-            "location":    sc.get("scenario", "see fault scenario"),
-            "description": sc.get("root_cause", ""),
-            "fix_hint":    sc.get("fix_code", ""),
-            "cwe":         sc.get("cwe", ""),
-        })
-
-    logger.info("Collected %d issue(s) for %s", len(issues), target)
-    return issues
+def load_ci_artifacts(state: PipelineState) -> PipelineState:
+    target = state["target"]
+    state["container_scan_result"]  = _load_json(REPORTS / "container-scan-summary.json")
+    state["unit_test_result"]       = _load_json(REPORTS / "unit-test-results.json")
+    state["slsa_hashes"]            = _load_slsa_hashes(target)
+    state["ota_manifest"]           = _load_json(REPORTS / "ota-manifest-signed.json")
+    state["deploy_status"]          = _load_deploy_status()
+    state["feedback_issues"]        = []
+    state["fault_injection_result"] = _load_json(REPORTS / f"fault-injection-report-{target}.json")
+    state["hil_result"]             = _load_json(REPORTS / f"hil-report-{target}.json")
+    state["patches_generated"]      = 0
+    state["tests_deployed"]         = False
+    return state
 
 
-# ═══════════════════════════════════════════════════════════════
-# PATCH GENERATION  (LLM → unified diff)
-# ═══════════════════════════════════════════════════════════════
-
-def _generate_patch_for_file(
-    filename: str,
-    original_src: str,
-    issues: List[Dict],
-    llm,
-) -> Dict | None:
-    """
-    Ask the LLM to produce a fixed version of `filename`, then compute
-    a unified diff against the original.  Returns a patch dict or None
-    if nothing changed.
-    """
-    issues_text = "\n".join(
-        f"  Issue {i+1}: [{iss['severity'].upper()}] {iss['description']}\n"
-        f"    Location : {iss.get('location', '?')}\n"
-        f"    Fix hint : {iss.get('fix_hint', '')[:300]}\n"
-        f"    CWE      : {iss.get('cwe', 'N/A')}"
-        for i, iss in enumerate(issues)
-    )
-
-    # If we have no source, generate a comment-only patch as a reminder
-    if not original_src:
-        original_src = (
-            f"// {filename} — source not available during patch generation\n"
-            f"// Patch is a template; apply manually after obtaining source.\n"
-        )
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a senior ESP32/ESP-IDF firmware engineer.
-Your task: fix the C++ source file below based on the listed issues.
-Return ONLY the complete corrected file content — no explanations,
-no markdown fences, no comments about what you changed.
-The output will be diffed against the original to produce a patch.
-Follow ESP-IDF conventions: esp_err_t returns, ESP_LOGE for errors,
-NULL checks after every heap allocation or handle lookup."""),
-
-        ("human", """=== FILE: {filename} ===
-
-=== ISSUES TO FIX ===
-{issues_text}
-
-=== ORIGINAL SOURCE ===
-{source}
-
-Return the complete corrected file content only."""),
-    ])
-
-    chain = prompt | llm | StrOutputParser()
+def node_code_review(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Code Review Agent  (Agent 3)")
+    state["current_stage"] = "code_review"
     try:
-        fixed = chain.invoke({
-            "filename":    filename,
-            "issues_text": issues_text,
-            "source":      original_src[:6000],
-        })
+        result = run_code_review_agent(target=state["target"])
+        state["code_review_result"] = result
+        score = result.get("quality_score", None)
+        if score is None:
+            m = re.search(r"(\d+)\s*(?:out of|/)\s*10", result.get("review", ""), re.I)
+            score = int(m.group(1)) if m else None
+        if score is not None and score < 5:
+            state["errors_found"] = True
     except Exception as e:
-        logger.error("LLM call failed for %s: %s", filename, e)
-        return None
-
-    # Strip accidental markdown fences the model might add
-    fixed = fixed.strip()
-    for fence in ("```cpp", "```c", "```", "`"):
-        if fixed.startswith(fence):
-            fixed = fixed[len(fence):]
-        if fixed.endswith(fence):
-            fixed = fixed[:-len(fence)]
-    fixed = fixed.strip()
-
-    # Compute unified diff
-    diff_lines = list(difflib.unified_diff(
-        original_src.splitlines(keepends=True),
-        fixed.splitlines(keepends=True),
-        fromfile=f"a/main/{filename}" if any(filename.endswith(e) for e in ('.cpp','.c','.h','.hpp')) else f"a/{filename}",
-        tofile=f"b/main/{filename}"   if any(filename.endswith(e) for e in ('.cpp','.c','.h','.hpp')) else f"b/{filename}",
-        lineterm="\n",
-    ))
-
-    if not diff_lines:
-        logger.info("No changes produced for %s — skipping patch", filename)
-        return None
-
-    patch_content = "".join(diff_lines)
-
-    # Save .patch file
-    PATCHES.mkdir(parents=True, exist_ok=True)
-    safe_name  = filename.replace("/", "_").replace("\\", "_")
-    patch_name = f"fix_{safe_name}"
-    patch_path = PATCHES / f"{patch_name}.patch"
-    patch_path.write_text(patch_content, encoding="utf-8")
-    logger.info("Patch saved: %s (%d lines)", patch_path.name, len(diff_lines))
-
-    return {
-        "filename":      filename,
-        "patch_file":    str(patch_path),
-        "diff_lines":    len(diff_lines),
-        "issues_fixed":  [iss["description"][:120] for iss in issues],
-        "cwe_list":      list({iss["cwe"] for iss in issues if iss.get("cwe")}),
-        "severity":      max((iss["severity"] for iss in issues),
-                             key=lambda s: {"critical": 2, "high": 1}.get(s, 0)),
-    }
+        print(f"[Orchestrator] Code Review failed: {e}")
+        state["code_review_result"] = {"error": str(e)}
+        state["errors_found"] = True
+    return state
 
 
-# ═══════════════════════════════════════════════════════════════
-# APPLY SCRIPT GENERATION
-# ═══════════════════════════════════════════════════════════════
+def node_security(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Security Agent  (Agent 2)")
+    state["current_stage"] = "security"
+    try:
+        result = run_security_agent(target=state["target"])
+        state["security_result"] = result
+        score   = result.get("security_score", 10)
+        secrets = len(result.get("secrets_found", []))
+        if score < 6 or secrets > 0:
+            state["errors_found"] = True
+    except Exception as e:
+        print(f"[Orchestrator] Security Agent failed: {e}")
+        state["security_result"] = {"error": str(e), "security_score": 0}
+        state["errors_found"] = True
+    return state
 
-def _write_apply_script(patch_files: List[Path]) -> Path:
-    """
-    Generate reports/patches/APPLY_ALL.sh.
-    The ci.yml Stage 4b step calls:   bash reports/patches/APPLY_ALL.sh
-    """
+
+def node_debug(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Debug Agent  (Agent 1)")
+    state["current_stage"] = "debug"
+    try:
+        result = run_debug_agent(target=state["target"])
+        state["debug_result"] = result
+        errors = len(result.get("compilation_errors", []))
+        health = result.get("overall_health", "unknown")
+        if health == "broken" or errors > 0:
+            state["errors_found"] = True
+    except Exception as e:
+        print(f"[Orchestrator] Debug Agent failed: {e}")
+        state["debug_result"] = {"error": str(e)}
+        state["errors_found"] = True
+    return state
+
+
+def node_fault_analysis(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Fault Analysis Agent  (Agent 7)")
+    state["current_stage"] = "fault_analysis"
+    try:
+        result = run_fault_analysis_agent(target=state["target"])
+        state["fault_analysis_result"] = result
+        score = result.get("robustness_score", 10)
+        if score < 5:
+            state["errors_found"] = True
+
+        qemu_pass   = state.get("debug_result", {}).get("dynamic_findings", {}).get("qemu_status") == "pass"
+        fuzzer_pass = state.get("debug_result", {}).get("dynamic_findings", {}).get("fuzzer_status") == "pass"
+        fault_pass  = state.get("fault_injection_result", {}).get("overall_status") == "pass"
+        hil_pass    = state.get("hil_result", {}).get("status") == "pass"
+
+        dynamic_score = int(
+            (score * 0.4) +
+            (10 if qemu_pass   else 0) * 0.3 +
+            (10 if fuzzer_pass else 0) * 0.2 +
+            (10 if hil_pass    else 0) * 0.1
+        )
+        state["dynamic_score"] = min(dynamic_score, 10)
+        print(f"[Orchestrator] Dynamic score: {state['dynamic_score']}/10")
+    except Exception as e:
+        print(f"[Orchestrator] Fault Analysis Agent failed: {e}")
+        state["fault_analysis_result"] = {"error": str(e)}
+        state["dynamic_score"]         = 0
+    return state
+
+
+def node_test_gen(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Test Generation Agent  (Agent 4)")
+    state["current_stage"] = "test_gen"
+    try:
+        result = run_test_gen_agent(target=state["target"])
+        state["testgen_result"] = result
+        n      = len(result.get("test_cases", []))
+        deploy = result.get("deploy_manifest", {})
+        state["tests_deployed"] = deploy.get("status") in ("deployed", "partial")
+        print(f"[Orchestrator] {n} test cases | deploy={deploy.get('status','?')}")
+    except Exception as e:
+        print(f"[Orchestrator] Test Gen Agent failed: {e}")
+        state["testgen_result"] = {"error": str(e)}
+        state["tests_deployed"] = False
+    return state
+
+
+def node_optimization(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Optimization Agent  (Agent 5)")
+    state["current_stage"] = "optimization"
+    try:
+        result = run_optimization_agent(target=state["target"])
+        state["optimization_result"] = result
+        for region in ["flash", "dram", "iram"]:
+            if result.get("memory_usage", {}).get(f"{region}_risk") == "critical":
+                state["errors_found"] = True
+    except Exception as e:
+        print(f"[Orchestrator] Optimization Agent failed: {e}")
+        state["optimization_result"] = {"error": str(e)}
+    return state
+
+
+def node_release(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Release Agent  (Agent 6)")
+    state["current_stage"] = "release"
+    try:
+        deploy_val = state.get("deploy_status", "")
+        if deploy_val:
+            REPORTS.mkdir(exist_ok=True)
+            (REPORTS / "deploy-status.txt").write_text(deploy_val)
+        result = run_release_agent(version=state["version"], target=state["target"])
+        state["release_result"] = result
+    except Exception as e:
+        print(f"[Orchestrator] Release Agent failed: {e}")
+        state["release_result"] = {"error": str(e)}
+    return state
+
+
+def node_autofix(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: AutoFix Agent  (Agent 8 — patches + test deploy)")
+    state["current_stage"] = "autofix"
+    try:
+        result = run_autofix_agent(target=state["target"], apply_patches=False)
+        state["autofix_result"]    = result
+        state["patches_generated"] = result.get("patches_generated", 0)
+
+        test_int = result.get("test_integration", {})
+        if test_int.get("status") == "deployed" and not state.get("tests_deployed"):
+            state["tests_deployed"] = True
+
+        n = state["patches_generated"]
+        print(f"[Orchestrator] AutoFix: {n} patch(es) generated")
+    except Exception as e:
+        print(f"[Orchestrator] AutoFix Agent failed: {e}")
+        state["autofix_result"]    = {"error": str(e)}
+        state["patches_generated"] = 0
+    return state
+
+
+def node_summary(state: PipelineState) -> PipelineState:
+    print("\n" + "="*60)
+    print("NODE: Pipeline Summary")
+    state["current_stage"] = "summary"
+
+    target  = state["target"]
+    version = state["version"]
+
+    _cr        = state.get("code_review_result", {})
+    code_score = _cr.get("quality_score", None)
+    if code_score is None:
+        m = re.search(r"(\d+)\s*(?:out of|/)\s*10", _cr.get("review", ""), re.I)
+        code_score = int(m.group(1)) if m else "N/A"
+
+    sec_score  = state.get("security_result", {}).get("security_score", "N/A")
+    build_ok   = state.get("debug_result", {}).get("build_status", "unknown")
+    flash_pct  = state.get("optimization_result", {}).get("memory_usage", {}).get("flash_pct", "N/A")
+    rob_score  = state.get("fault_analysis_result", {}).get("robustness_score", "N/A")
+    dyn_score  = state.get("dynamic_score", "N/A")
+    n_cves     = len(state.get("security_result", {}).get("critical_cves", []))
+    hil_status = state.get("hil_result", {}).get("status", "not_run")
+    n_patches  = state.get("patches_generated", 0)
+    tests_ok   = state.get("tests_deployed", False)
+    errors     = state.get("errors_found", False)
+
+    _cpp_file  = REPORTS / f"generated_tests_{target}.cpp"
+    n_tests    = len(state.get("testgen_result", {}).get("test_cases", []))
+    n_tests    = n_tests if n_tests > 0 else (1 if _cpp_file.exists() else 0)
+
+    second_run_ready   = n_patches > 0 or tests_ok
+    state["pipeline_passed"] = not errors
+
     lines = [
-        "#!/bin/bash",
-        "# AutoFix — apply all generated patches to ESP-Matter source",
-        f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "#",
-        "# Called by ci.yml Stage 4b BEFORE the second build:",
-        "#   - name: 🩹 Apply AutoFix patches",
-        "#     run: bash reports/patches/APPLY_ALL.sh",
-        "#",
-        "set -e",
         "",
-        "# Resolve ESP-Matter source dir (same logic as agents)",
-        "ESP_MAIN=''",
-        "for CANDIDATE in \\",
-        "    'esp-matter/examples/light/main' \\",
-        "    '../esp-matter/examples/light/main' \\",
-        "    '/opt/espressif/esp-matter/examples/light/main'; do",
-        "  if [ -d \"$CANDIDATE\" ]; then ESP_MAIN=\"$CANDIDATE\"; break; fi",
-        "done",
-        "",
-        "if [ -z \"$ESP_MAIN\" ]; then",
-        "  echo '[AutoFix] ERROR: ESP-Matter source directory not found'",
-        "  exit 1",
-        "fi",
-        "echo \"[AutoFix] Applying patches to: $ESP_MAIN\"",
-        "",
-        "PATCHES_DIR=\"$(dirname \"$0\")\"",
-        "APPLIED=0",
-        "SKIPPED=0",
-        "",
+        "╔══════════════════════════════════════════════════════════╗",
+        f"║  ESP32 Matter DevSecOps AI Pipeline -- {version}",
+        f"║  Target: {target}",
+        "╠══════════════════════════════════════════════════════════╣",
+        f"║  Agent 3 -- Code Quality      Score: {code_score}/10",
+        f"║  Agent 2 -- Security          Score: {sec_score}/10 | CVEs: {n_cves}",
+        f"║  Agent 1 -- Build             Status: {build_ok}",
+        f"║  Agent 4 -- Tests             {n_tests} cases | deployed: {tests_ok}",
+        f"║  Agent 5 -- Memory            Flash: {flash_pct}%",
+        f"║  Agent 7 -- Robustness        Score: {rob_score}/10",
+        f"║  Dynamic Score (composite)    {dyn_score}/10",
+        f"║  HIL Real Hardware            {hil_status}",
+        f"║  Agent 8 -- AutoFix           {n_patches} patch(es)",
+        "╠══════════════════════════════════════════════════════════╣",
+        f"║  Overall: {'PASSED' if not errors else 'ISSUES DETECTED'}",
+        f"║  Second Run Ready: {'YES' if second_run_ready else 'NO'}",
+        "╚══════════════════════════════════════════════════════════╝",
     ]
+    state["summary"] = "\n".join(lines)
+    print(state["summary"])
 
-    for pf in sorted(patch_files):
-        lines += [
-            f"echo '[AutoFix] → {pf.name}'",
-            # First check if the patch applies cleanly
-            f"if git apply --check --directory=\"$ESP_MAIN\" \"{pf.resolve()}\" 2>/dev/null; then",
-            f"  git apply --directory=\"$ESP_MAIN\" \"{pf.resolve()}\"",
-            "  APPLIED=$((APPLIED+1))",
-            "  echo '  ✅ Applied'",
-            "else",
-            f"  echo '  ⚠️  Skipped (already applied or conflicts)'",
-            "  SKIPPED=$((SKIPPED+1))",
-            "fi",
-            "",
-        ]
-
-    lines += [
-        "echo \"\"",
-        "echo \"[AutoFix] Done — Applied: $APPLIED | Skipped: $SKIPPED\"",
-        "",
-        "# Verify build still compiles after patches",
-        "if command -v idf.py &>/dev/null; then",
-        "  echo '[AutoFix] Verifying build...'",
-        "  cd \"$ESP_MAIN\"",
-        "  idf.py build 2>&1 | tail -8",
-        "fi",
-    ]
-
-    script_path = PATCHES / "APPLY_ALL.sh"
-    script_path.write_text("\n".join(lines), encoding="utf-8")
-    script_path.chmod(0o755)
-    logger.info("Apply script: %s", script_path)
-    return script_path
-
-
-# ═══════════════════════════════════════════════════════════════
-# GENERATED TEST INTEGRATION
-# ═══════════════════════════════════════════════════════════════
-
-def _apply_generated_tests(target: str) -> Dict:
-    """
-    Copy the generated test file into the ESP-Matter test directory
-    so the second CI run picks it up automatically.
-
-    Returns a dict describing what was done (included in the report).
-    """
-    test_src = REPORTS / f"generated_tests_{target}.cpp"
-    if not test_src.exists():
-        return {"status": "no_test_file", "path": str(test_src)}
-
-    src_dir = _find_source_dir()
-    if src_dir is None:
-        return {"status": "source_not_found"}
-
-    # Target location: examples/light/test/
-    test_dir = src_dir.parent / "test"
-    test_dir.mkdir(exist_ok=True)
-    dest = test_dir / f"test_light_app_{target}.cpp"
-
-    try:
-        content = test_src.read_text(encoding="utf-8")
-        dest.write_text(content, encoding="utf-8")
-        logger.info("Test file deployed: %s", dest)
-        return {
-            "status":    "deployed",
-            "source":    str(test_src),
-            "dest":      str(dest),
-            "size_chars": len(content),
-        }
-    except Exception as e:
-        logger.error("Failed to deploy test file: %s", e)
-        return {"status": "error", "error": str(e)}
-
-
-# ═══════════════════════════════════════════════════════════════
-# MAIN AGENT FUNCTION
-# ═══════════════════════════════════════════════════════════════
-
-def run_autofix_agent(
-    target:      str  = TARGET,
-    apply_patches: bool = False,
-) -> dict:
-    """
-    Run the Auto-Fix Agent.
-
-    Args:
-        target:        ESP32 chip target (e.g. "esp32c3")
-        apply_patches: If True, immediately run APPLY_ALL.sh after generation
-
-    Returns:
-        Report dict written to reports/autofix-report-{target}.json
-        Keys consumed by orchestrator:
-          patches_generated (int)
-          status            (str)
-          test_integration  (dict)
-    """
-    print(f"\n{'='*60}")
-    print(f"Agent 8 — Auto-Fix Agent")
-    print(f"Target : {target}")
-    print(f"{'='*60}")
-
-    PATCHES.mkdir(parents=True, exist_ok=True)
     REPORTS.mkdir(exist_ok=True)
-
-    # ── 1. Collect issues ─────────────────────────────────────────
-    issues = collect_issues(target)
-
-    if not issues:
-        logger.info("No critical/high issues found — nothing to patch")
-        report = {
-            "agent":             "autofix_agent",
-            "target":            target,
-            "timestamp":         datetime.now().isoformat(),
-            "issues_analyzed":   0,
-            "patches_generated": 0,
-            "patch_files":       [],
-            "apply_script":      str(PATCHES / "APPLY_ALL.sh"),
-            "test_integration":  _apply_generated_tests(target),
-            "status":            "clean",
-            "summary":           "No critical or high issues found — no patches needed.",
-        }
-        _out = REPORTS / f"autofix-report-{target}.json"
-        _out.write_text(json.dumps(report, indent=2), encoding="utf-8")
-        return report
-
-    print(f"[AutoFix] {len(issues)} issue(s) to address")
-
-    # ── 2. Group issues by file ───────────────────────────────────
-    issues_by_file: Dict[str, List[Dict]] = {}
-    for issue in issues:
-        f = issue.get("file") or "app_main.cpp"
-        # Keep full relative path (demo/bug.py stays demo/bug.py)
-        f = f.lstrip("/")
-        issues_by_file.setdefault(f, []).append(issue)
-
-    # ── 3. Load sources ───────────────────────────────────────────
-    src_dir = _find_source_dir()
-    sources: Dict[str, str] = {}
-    for filename in issues_by_file:
-        sources[filename] = _read_source(filename, src_dir)
-
-    # ── 4. Instantiate LLM ───────────────────────────────────────
-    llm = ChatGroq(
-        model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
-        api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0.05,
-        max_tokens=4000,
-    )
-
-    # ── 5. Generate patches (max 6 files to stay in token budget) ─
-    all_patch_results: List[Dict] = []
-    for filename, file_issues in list(issues_by_file.items())[:6]:
-        print(f"[AutoFix] Patching {filename} ({len(file_issues)} issue(s))...")
-        patch = _generate_patch_for_file(
-            filename=filename,
-            original_src=sources.get(filename, ""),
-            issues=file_issues,
-            llm=llm,
-        )
-        if patch:
-            all_patch_results.append(patch)
-        else:
-            logger.info("No patch produced for %s", filename)
-
-    # ── 6. Write APPLY_ALL.sh ─────────────────────────────────────
-    patch_files = list(PATCHES.glob("*.patch"))
-    apply_script = _write_apply_script(patch_files)
-
-    # ── 7. Deploy generated tests into ESP-Matter test dir ────────
-    test_integration = _apply_generated_tests(target)
-    if test_integration.get("status") == "deployed":
-        print(f"[AutoFix] Test file deployed → {test_integration['dest']}")
-
-    # ── 8. Optionally apply patches immediately ───────────────────
-    apply_results: List[Dict] = []
-    if apply_patches and patch_files:
-        print("[AutoFix] Applying patches via git apply...")
-        for pf in sorted(patch_files):
-            try:
-                check = subprocess.run(
-                    ["git", "apply", "--check", str(pf)],
-                    capture_output=True, text=True,
-                )
-                if check.returncode == 0:
-                    subprocess.run(["git", "apply", str(pf)], check=True)
-                    apply_results.append({"patch": pf.name, "status": "applied"})
-                    print(f"  ✅ {pf.name}")
-                else:
-                    apply_results.append({
-                        "patch":  pf.name,
-                        "status": "skipped",
-                        "reason": check.stderr[:200],
-                    })
-                    print(f"  ⚠️  {pf.name} — {check.stderr[:80]}")
-            except Exception as e:
-                apply_results.append({"patch": pf.name, "status": "error", "error": str(e)})
-                print(f"  ❌ {pf.name} — {e}")
-
-    # ── 9. Build final report ─────────────────────────────────────
-    total_patches = len(all_patch_results)
-    report = {
-        "agent":             "autofix_agent",
-        "target":            target,
-        "timestamp":         datetime.now().isoformat(),
-        "issues_analyzed":   len(issues),
-        "files_patched":     len(issues_by_file),
-        "patches_generated": total_patches,        # ← orchestrator reads this
-        "patch_files":       [p["patch_file"] for p in all_patch_results],
-        "apply_script":      str(apply_script),
-        "patches_detail":    all_patch_results,
-        "apply_results":     apply_results,
-        "test_integration":  test_integration,
-        "status":            (
-            "patches_generated" if total_patches > 0 else "no_patches_generated"
-        ),
-        "summary": (
-            f"{total_patches} patch(es) generated for "
-            f"{len(issues_by_file)} file(s), addressing {len(issues)} issue(s). "
-            f"Test integration: {test_integration.get('status', 'unknown')}. "
-            f"Apply with: bash {apply_script}"
-        ),
+    full_summary = {
+        "target":           target,
+        "version":          version,
+        "pipeline_passed":  state["pipeline_passed"],
+        "errors_found":     errors,
+        "second_run_ready": second_run_ready,
+        "stage_results": {
+            "code_quality":    {"score": code_score, "issues": len(_cr.get("issues", []))},
+            "security":        {"score": sec_score, "cves": n_cves,
+                                "secrets": len(state.get("security_result", {}).get("secrets_found", []))},
+            "build":           {"status": build_ok},
+            "tests_generated": n_tests,
+            "tests_deployed":  tests_ok,
+            "memory":          {"flash_pct": flash_pct},
+            "fault_injection": {
+                "robustness_score":  rob_score,
+                "verdict":           state.get("fault_analysis_result", {}).get("overall_verdict", "N/A"),
+                "critical_failures": state.get("fault_injection_result", {}).get("critical_failures", []),
+            },
+            "dynamic_score": dyn_score,
+            "hil":           {"status": hil_status,
+                              "boot_success": state.get("hil_result", {}).get("boot_success", False),
+                              "matter_started": state.get("hil_result", {}).get("matter_started", False)},
+            "autofix": {
+                "patches_generated":  n_patches,
+                "patch_files":        state.get("autofix_result", {}).get("patch_files", []),
+                "apply_script":       state.get("autofix_result", {}).get("apply_script", ""),
+                "test_deploy_status": state.get("autofix_result", {}).get("test_integration", {}).get("status", "N/A"),
+                "issues_analyzed":    state.get("autofix_result", {}).get("issues_analyzed", 0),
+            },
+            "release":       {"version": version, "canary_deploy": state.get("deploy_status", "not_run")},
+        },
     }
-
-    out = REPORTS / f"autofix-report-{target}.json"
-    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
-
-    print(f"\n[AutoFix] {total_patches} patch(es) generated")
-    print(f"[AutoFix] Apply script  : {apply_script}")
-    print(f"[AutoFix] Report        : {out}")
-    print(f"[AutoFix] Tests deployed: {test_integration.get('status')}")
-    return report
+    (REPORTS / "pipeline-summary.json").write_text(json.dumps(full_summary, indent=2), encoding="utf-8")
+    print(f"\n[Orchestrator] Summary saved: {REPORTS / 'pipeline-summary.json'}")
+    return state
 
 
-# ═══════════════════════════════════════════════════════════════
-# CLI
-# ═══════════════════════════════════════════════════════════════
+def build_pipeline_graph():
+    graph = StateGraph(PipelineState)
+    graph.add_node("code_review",    node_code_review)
+    graph.add_node("security",       node_security)
+    graph.add_node("debug",          node_debug)
+    graph.add_node("fault_analysis", node_fault_analysis)
+    graph.add_node("test_gen",       node_test_gen)
+    graph.add_node("optimization",   node_optimization)
+    graph.add_node("release",        node_release)
+    graph.add_node("autofix",        node_autofix)
+    graph.add_node("summary",        node_summary)
+    graph.set_entry_point("code_review")
+    graph.add_edge("code_review",    "security")
+    graph.add_edge("security",       "debug")
+    graph.add_edge("debug",          "fault_analysis")
+    graph.add_edge("fault_analysis", "test_gen")
+    graph.add_edge("test_gen",       "optimization")
+    graph.add_edge("optimization",   "release")
+    graph.add_edge("release",        "autofix")
+    graph.add_edge("autofix",        "summary")
+    graph.add_edge("summary",        END)
+    return graph.compile()
+
+
+def run_pipeline(target: str = TARGET, version: str = "v1.0.0") -> PipelineState:
+    print("\n" + "#"*64)
+    print("#  ESP32 Matter -- AI DevSecOps Pipeline v3 (with AutoFix) #")
+    print(f"#  Target: {target:<10}  Version: {version:<28}  #")
+    print("#"*64)
+    REPORTS.mkdir(exist_ok=True)
+    initial: PipelineState = {
+        "target": target, "source_path": os.getenv("EXAMPLE_PATH", "esp-matter/examples/light"),
+        "version": version, "code_review_result": {}, "security_result": {},
+        "debug_result": {}, "testgen_result": {}, "optimization_result": {},
+        "release_result": {}, "fault_analysis_result": {}, "autofix_result": {},
+        "container_scan_result": {}, "unit_test_result": {}, "slsa_hashes": {},
+        "ota_manifest": {}, "deploy_status": "", "feedback_issues": [],
+        "fault_injection_result": {}, "hil_result": {}, "dynamic_score": 0,
+        "patches_generated": 0, "tests_deployed": False,
+        "current_stage": "init", "errors_found": False,
+        "pipeline_passed": False, "summary": "",
+    }
+    print("\n[Orchestrator] Loading CI artifacts...")
+    initial = load_ci_artifacts(initial)
+    print(f"  fault_injection : {bool(initial['fault_injection_result'])}")
+    print(f"  hil_result      : {initial['hil_result'].get('status', 'not_run')}")
+    pipeline    = build_pipeline_graph()
+    final_state = pipeline.invoke(initial)
+    return final_state
+
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="AutoFix Agent — generate + apply patches")
-    parser.add_argument("--target",  default=TARGET,  help="ESP32 chip target")
-    parser.add_argument("--apply",   action="store_true",
-                        help="Apply patches immediately via git apply")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target",  default=TARGET)
+    parser.add_argument("--version", default="v1.0.0")
     args = parser.parse_args()
-    result = run_autofix_agent(target=args.target, apply_patches=args.apply)
-    print(f"\nAutoFix: {result['patches_generated']} patch(es) | status: {result['status']}")
+    final = run_pipeline(target=args.target, version=args.version)
+    n = final.get("patches_generated", 0)
+    print(f"\nPipeline complete. Passed: {final['pipeline_passed']}")
+    print(f"Patches generated: {n}")
+    if n > 0:
+        print("Apply: bash reports/patches/APPLY_ALL.sh")
