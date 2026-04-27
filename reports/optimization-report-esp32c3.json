@@ -59,5 +59,5 @@
   "total_estimated_saving_kb": 30,
   "ota_partition_feasible": true,
   "ota_recommendation": "OTA requires 2\u00d7app partition. With current size, feasible with 4MB flash.",
-  "summary": "The current memory usage is within acceptable limits, but there are opportunities for optimization. Enabling compiler size optimization and using newlib nano format can save around 30KB of flash memory. Reviewing and optimizing the usage of the CHIP library and disabling unused clusters in menuconfig can also help reduce memory usage."
+  "summary": "The current memory usage is within acceptable limits, but there are opportunities for optimization. Enabling compiler size optimization and using newlib nano format can save up to 30KB of flash memory. Reviewing and optimizing the usage of the CHIP library and disabling unused clusters in menuconfig can also help reduce memory usage."
 }

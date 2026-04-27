@@ -5,35 +5,30 @@
   "warnings": [
     {
       "type": "Kconfig warning",
-      "description": "default on the choice symbol SEC_CERT_DAC_PROVIDER will have no effect",
+      "description": "The choice symbol SEC_CERT_DAC_PROVIDER is defined with a prompt outside the choice",
       "impact": "low"
     },
     {
       "type": "Kconfig warning",
-      "description": "the choice symbol SEC_CERT_DAC_PROVIDER is defined with a prompt outside the choice",
-      "impact": "low"
-    },
-    {
-      "type": "Kconfig warning",
-      "description": "Symbol SEC_CERT_DAC_PROVIDER defined in multiple locations",
+      "description": "The choice symbol SEC_CERT_DAC_PROVIDER is defined in multiple locations",
       "impact": "medium"
     }
   ],
-  "unit_test_status": "not_implemented",
+  "unit_test_status": "fail",
   "unit_test_findings": [
     {
-      "test": "unit tests",
-      "result": "missing",
-      "note": "add tests via workflow_dispatch reason=sync-esp-matter-source"
+      "test": "Test file has 1 test function(s)",
+      "result": "fail",
+      "note": "Build status failed, please check the test file and rebuild"
     }
   ],
-  "quality_gate_errors": 1,
+  "quality_gate_errors": 5,
   "quality_gate_status": "fail",
   "prioritised_actions": [
-    "Implement unit tests to ensure code coverage and reliability",
-    "Address the unreadVariable error in app_main.cpp by using the assigned value or removing the assignment",
-    "Review Kconfig warnings to ensure correct configuration"
+    "Fix the compilation issue in the test file to enable unit testing",
+    "Address the Kconfig warnings for SEC_CERT_DAC_PROVIDER",
+    "Review and fix the quality gate errors reported by cppcheck"
   ],
   "overall_health": "degraded",
-  "summary": "The build was successful, but there are Kconfig warnings and a quality gate error due to an unused variable. Unit tests are not implemented, which is a significant concern. Prioritised actions should be taken to address these issues and improve the overall health of the project."
+  "summary": "The build was successful, but unit tests failed due to a compilation issue, and there are Kconfig warnings and quality gate errors that need to be addressed to ensure the overall health of the project."
 }
