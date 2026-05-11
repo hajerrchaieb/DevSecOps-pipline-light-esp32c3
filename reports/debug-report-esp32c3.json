@@ -5,35 +5,32 @@
   "warnings": [
     {
       "type": "Kconfig warning",
-      "description": "default on the choice symbol SEC_CERT_DAC_PROVIDER will have no effect",
+      "description": "The choice symbol SEC_CERT_DAC_PROVIDER is defined with a prompt outside the choice",
       "impact": "low"
     },
     {
       "type": "Kconfig warning",
-      "description": "the choice symbol SEC_CERT_DAC_PROVIDER is defined with a prompt outside the choice",
-      "impact": "low"
-    },
-    {
-      "type": "Kconfig warning",
-      "description": "Symbol SEC_CERT_DAC_PROVIDER defined in multiple locations",
+      "description": "The choice symbol SEC_CERT_DAC_PROVIDER is defined in multiple locations",
       "impact": "medium"
     }
   ],
-  "unit_test_status": "not_implemented",
+  "unit_test_status": "fail",
   "unit_test_findings": [
     {
-      "test": "unit tests",
-      "result": "missing",
-      "note": "add tests via workflow_dispatch reason=sync-esp-matter-source"
+      "test": "Test file has 1 test function(s)",
+      "result": "fail",
+      "note": "Build status: failed, please check the test file and rebuild"
     }
   ],
-  "quality_gate_errors": 1,
+  "quality_gate_errors": 5,
   "quality_gate_status": "fail",
   "prioritised_actions": [
-    "Implement unit tests to ensure code coverage and reliability",
-    "Address the unreadVariable error in app_main.cpp by using the assigned value or removing the assignment",
-    "Review Kconfig warnings to ensure correct configuration"
+    "Fix the unread variable 'dac_provider' in app_main.cpp",
+    "Fix the missing include file 'mock_idf.h' in test_light_app_esp32c3.cpp",
+    "Fix the unused functions 'setUp', 'tearDown', and 'app_main' in test_light_app_esp32c3.cpp",
+    "Review the Kconfig warnings for SEC_CERT_DAC_PROVIDER",
+    "Rebuild and rerun the unit tests"
   ],
   "overall_health": "degraded",
-  "summary": "The build was successful, but there are Kconfig warnings and a quality gate error due to an unused variable. Unit tests are not implemented, which is a significant concern. Prioritised actions should be taken to address these issues and improve the overall health of the project."
+  "summary": "The build was successful, but there are Kconfig warnings, unit test failures, and quality gate errors that need to be addressed. The code has some unused variables and functions, and the test file has a build failure. The overall health of the project is degraded and requires attention to these issues."
 }
